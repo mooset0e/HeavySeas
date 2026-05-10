@@ -129,8 +129,29 @@ Real-time arena combat in a dedicated `CombatScreen` (40×22 tile arena, 32 px/t
 
 ### Cannon fire
 - Player fires with **Space** when enemy is in broadside arc (±60°)
-- Hit formula: `P(hit) = accuracy × (1 - dist/range) × (morale/100)`
-- Cannonball projectiles: visual dots (yellow/orange) at 18 tiles/sec; damage applied on arrival
+- **Broadside quality multiplier** — `broadsideQuality()` scales hit probability 0.3–1.0 by angle; perfect 90° = 1.0, arc edges (30°/150°) = 0.3. Applies to both player and enemy.
+- Hit formula: `P(hit) = accuracy × (1 - dist/range) × (morale/100) × broadsideMult × crewAccuracyMult`
+- **Triple volley** — every broadside fires 3 cannonballs at −5°/0°/+5° spread; each independently rolled for hit and damage
+- **Arcing projectiles** — balls follow a `sin(progress×π)` arc, peaking 48px above the water at midpoint; shadow dot grows at peak; ball swells slightly as it rises; trail rendered behind
+- **Crew-based reload and accuracy**:
+  - Optimal: 3 crew per cannon → 1× reload speed, 100% accuracy
+  - Short-handed: up to 3× slower reload, down to 60% accuracy
+  - Applied to both player and enemy (as their crew is whittled down, they slow too)
+
+### Cannon ranges
+| Tier | Range (tiles) |
+|---|---|
+| Light | 6 |
+| Medium | 9 |
+| Heavy | 13 |
+
+### Crew casualties from cannon fire
+- Each point of hull damage has a **15% independent chance** to kill a crew member
+- Expected crew deaths per hit: Light ~1.2, Medium ~2.1, Heavy ~3.3
+- With 3 balls per volley, a well-placed heavy broadside can kill 6–10 crew in one salvo
+- **Morale** drops 4 points per crew death, floored at 10
+- As morale falls, hit accuracy degrades further (compounding pressure)
+- HUD panels show hull bar, crew bar, and morale % for both ships
 
 ### Escape
 - Enemy is clamped to arena above 20% hull
@@ -144,6 +165,15 @@ Real-time arena combat in a dedicated `CombatScreen` (40×22 tile arena, 32 px/t
   - **Sack:** plunder + hull scrap bonus, sets `sacked_` flag (+15 infamy) → `EnemySunk`
   - **Refuse:** dismiss, combat resumes
 
+### Victory screen (`GameMode::CombatResult`)
+Shown after every EnemySunk or EnemyCaptured outcome before returning to sailing.
+- Displays gold seized and cargo plundered
+- Title changes to `~ SACKED AND PLUNDERED ~` if the ship was sacked
+- **Crew recruitment offer**: each surviving enemy crew member independently rolls to defect
+  - Defection chance: `0.25 + (1 - enemyMorale/100) × 0.45` (25–70%, higher when morale is broken)
+  - Offer capped at available bunk space on player ship
+  - `[Y]` accept / `[N]` decline → `[Enter]` return to sailing
+
 ### Outcomes
 | Outcome | Trigger |
 |---|---|
@@ -153,7 +183,7 @@ Real-time arena combat in a dedicated `CombatScreen` (40×22 tile arena, 32 px/t
 | EnemyEscaped | Enemy drifts outside arena (hull < 20%) |
 | PlayerFled | Player exits arena |
 
-**Implemented:** `src/ui/CombatScreen.h/.cpp`, `src/combat/CombatState.h`, `src/combat/CombatSystem.h/.cpp`
+**Implemented:** `src/ui/CombatScreen.h/.cpp`, `src/combat/CombatState.h`, `src/combat/CombatSystem.h/.cpp`, `src/core/GameState.h` (`CombatResult` mode), `src/main.cpp` (victory screen + recruitment logic)
 
 ---
 
