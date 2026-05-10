@@ -1,7 +1,7 @@
 #pragma once
 #include "ship/EnemyShip.h"
 
-enum class GameMode { Sailing, Port, Encounter, Combat };
+enum class GameMode { Sailing, Port, Encounter, Combat, CombatResult };
 
 struct GameState {
     GameMode mode            = GameMode::Sailing;

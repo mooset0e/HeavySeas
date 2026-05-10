@@ -186,6 +186,16 @@ int main(int argc, char* argv[]) {
     HUD         hud(uiRenderer);
     CloudSystem clouds;
 
+    // Combat result summary — populated when combat ends in victory
+    struct CombatResult {
+        int  goldLooted     = 0;
+        int  cargoLooted    = 0;
+        int  recruitsOffered = 0;   // enemy crew who want to join
+        bool sacked         = false;
+        bool recruitPending = false; // still waiting for Y/N
+        bool accepted       = false;
+    } combatResult;
+
     std::unique_ptr<PortScreen>      portScreen;
     std::unique_ptr<EncounterScreen> encounterScreen;
     std::unique_ptr<CombatScreen>    combatScreen;
@@ -480,10 +490,10 @@ int main(int argc, char* argv[]) {
 
                 if (outcome == CombatOutcome::EnemySunk ||
                     outcome == CombatOutcome::EnemyCaptured) {
-                    ship.hullCur  = combatScreen->playerState().hullCur;
-                    ship.crewCur  = combatScreen->playerState().crewCur;
-                    ship.gold    += combatScreen->goldLooted();
-                    // Sacking a surrendered ship or sinking non-pirates gains infamy
+                    ship.hullCur = combatScreen->playerState().hullCur;
+                    ship.crewCur = combatScreen->playerState().crewCur;
+
+                    // Infamy
                     bool gainedInfamy = combatScreen->sackingFlagged() ||
                                         (outcome == CombatOutcome::EnemySunk &&
                                          ae.faction != Faction::Pirate);
@@ -494,7 +504,27 @@ int main(int argc, char* argv[]) {
                     }
                     if (!navyHostile && ae.faction == Faction::Navy)
                         navyHostile = true;
-                    gameState.mode = GameMode::Sailing;
+
+                    // Build result summary — crew recruitment offer
+                    int enemySurvivors = combatScreen->enemyState().crewCur;
+                    float enemyMorale  = combatScreen->enemyState().morale;
+                    // Each survivor has 25–70% chance to defect based on how broken they are
+                    float joinChance = 0.25f + (1.0f - enemyMorale / 100.0f) * 0.45f;
+                    int offered = 0;
+                    for (int i = 0; i < enemySurvivors; ++i)
+                        if ((float)(std::rand() % 1000) / 1000.0f < joinChance) ++offered;
+                    // Cap at available bunk space
+                    offered = std::min(offered, ship.crewMax - ship.crewCur);
+
+                    combatResult.goldLooted      = combatScreen->goldLooted();
+                    combatResult.cargoLooted      = ae.cargoCur;
+                    combatResult.sacked           = combatScreen->sackingFlagged();
+                    combatResult.recruitsOffered  = offered;
+                    combatResult.recruitPending   = (offered > 0);
+                    combatResult.accepted         = false;
+
+                    ship.gold += combatResult.goldLooted;
+                    gameState.mode = GameMode::CombatResult;
 
                 } else if (outcome == CombatOutcome::PlayerSunk) {
                     ship.hullCur = combatScreen->playerState().hullCur;
@@ -536,6 +566,23 @@ int main(int argc, char* argv[]) {
 
                 combatScreen.reset();
             }
+
+        // ===== COMBAT RESULT =====
+        } else if (gameState.mode == GameMode::CombatResult) {
+            if (combatResult.recruitPending) {
+                if (input.justPressed(SDL_SCANCODE_Y)) {
+                    ship.crewCur = std::min(ship.crewMax,
+                                            ship.crewCur + combatResult.recruitsOffered);
+                    combatResult.accepted       = true;
+                    combatResult.recruitPending = false;
+                }
+                if (input.justPressed(SDL_SCANCODE_N))
+                    combatResult.recruitPending = false;
+            } else {
+                if (input.justPressed(SDL_SCANCODE_RETURN) ||
+                    input.justPressed(SDL_SCANCODE_SPACE))
+                    gameState.mode = GameMode::Sailing;
+            }
         }
 
         endUpdate:;
@@ -548,6 +595,67 @@ int main(int argc, char* argv[]) {
 
         if (gameState.mode == GameMode::Combat && combatScreen) {
             combatScreen->render(wind);
+        } else if (gameState.mode == GameMode::CombatResult) {
+            // Draw world behind the panel
+            renderWorld(renderer, world, camX, camY);
+            renderPlayer(renderer, px, py, playerHeading, camX, camY);
+
+            static const SDL_Color BG     = {  8, 20, 40, 250 };
+            static const SDL_Color BORDER = { 220, 180, 60, 255 };
+            static const SDL_Color GOLD   = { 255, 220, 80, 255 };
+            static const SDL_Color TXT    = { 200, 180, 140, 255 };
+            static const SDL_Color DIM    = {  90, 100, 100, 255 };
+            static const SDL_Color GREEN  = {  80, 210, 100, 255 };
+
+            constexpr int PX = 340, PY = 120, PW = 600, PH = 0; // height computed below
+            SDL_Rect panel{ PX, PY, PW, 460 };
+            uiRenderer.drawPanel(panel, BG, BORDER, 3);
+
+            SDL_Rect titleR{ PX, PY, PW, 52 };
+            uiRenderer.drawPanel(titleR, { 40, 30, 5, 255 }, BORDER, 2);
+            uiRenderer.drawTextCentered(
+                combatResult.sacked ? "~ SACKED AND PLUNDERED ~" : "~ VICTORY ~",
+                titleR, GOLD);
+
+            int iy = PY + 68;
+            // Loot breakdown
+            uiRenderer.drawTextCentered("LOOT", { PX, iy, PW, 24 }, GOLD); iy += 32;
+
+            std::string goldLine = "Gold seized:     " + std::to_string(combatResult.goldLooted);
+            uiRenderer.drawTextCentered(goldLine.c_str(), { PX, iy, PW, 24 }, TXT); iy += 30;
+
+            if (combatResult.cargoLooted > 0) {
+                std::string cargoLine = "Cargo plundered: " + std::to_string(combatResult.cargoLooted) + " units";
+                uiRenderer.drawTextCentered(cargoLine.c_str(), { PX, iy, PW, 24 }, TXT); iy += 30;
+            }
+            iy += 20;
+
+            // Crew recruitment
+            if (combatResult.recruitsOffered > 0) {
+                uiRenderer.drawTextCentered("--- CREW OFFER ---", { PX, iy, PW, 24 }, BORDER); iy += 36;
+                std::string offerLine = std::to_string(combatResult.recruitsOffered) +
+                    (combatResult.recruitsOffered == 1
+                        ? " enemy sailor wishes to join your crew."
+                        : " enemy sailors wish to join your crew.");
+                uiRenderer.drawTextCentered(offerLine.c_str(), { PX, iy, PW, 24 }, TXT); iy += 30;
+
+                if (combatResult.recruitPending) {
+                    uiRenderer.drawTextCentered("Accept them?", { PX, iy, PW, 24 }, TXT); iy += 36;
+                    uiRenderer.drawTextCentered("[Y] Accept    [N] Decline",
+                                               { PX, iy, PW, 24 }, GREEN);
+                } else {
+                    const char* resp = combatResult.accepted
+                        ? "They join your crew." : "You turn them away.";
+                    uiRenderer.drawTextCentered(resp, { PX, iy, PW, 24 },
+                                               combatResult.accepted ? GREEN : DIM); iy += 36;
+                    uiRenderer.drawTextCentered("[Enter] Continue", { PX, PY + 420, PW, 24 }, DIM);
+                }
+            } else {
+                uiRenderer.drawTextCentered("No survivors wish to join your crew.",
+                                            { PX, iy, PW, 24 }, DIM); iy += 36;
+                uiRenderer.drawTextCentered("[Enter] Continue", { PX, PY + 420, PW, 24 }, DIM);
+            }
+
         } else if (gameState.mode == GameMode::Port && portScreen) {
             renderWorld(renderer, world, camX, camY);
             portScreen->render();
