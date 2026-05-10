@@ -1,7 +1,8 @@
 # Heavy Seas — Layer 1 Implementation Plan
 ## Ships, Combat, Enemy AI, Captain & Game Time
 
-> Status: APPROVED — ready to implement. Do not start until user confirms in a new session.
+> Status: **COMPLETE** — merged to master (commit 13a098c → 25634b5, 2026-05-10)
+> Design evolved during implementation — see notes below each section.
 
 ---
 
@@ -23,6 +24,8 @@ Ports are assigned nations at world generation. Navy ships fly their port's nati
 
 Nation enum seeds the **per-nation reputation system** coming in Layer 3.
 
+**Implemented:** `src/core/Nation.h` — enum class with all six nations + Independent. `World::nearestPortNation()` for encounter faction weighting.
+
 ---
 
 ## Part A — Ship Types
@@ -37,11 +40,6 @@ Five classes with distinct stats:
 | Galleon | 4.5 | 40°/s | 360 | 180 | 500 | 12 | Med/Heavy |
 | Man-o-War | 3.5 | 25°/s | 500 | 300 | 150 | 24 | Heavy |
 
-- Player starts in a **Sloop**
-- Speed multiplies against `Wind::speedFactor`
-- Each class has a minimum crew required to operate (enforces ship capture rules)
-- Ships purchasable at Shipyard
-
 Cannon tiers:
 
 | Tier | Damage | Range | Reload | Accuracy |
@@ -50,190 +48,169 @@ Cannon tiers:
 | Medium | 14 | 5 tiles | 5s | 75% |
 | Heavy | 22 | 7 tiles | 8s | 85% |
 
+**Implemented:** `src/ship/ShipType.h/.cpp` — `ShipTypeDef` struct + `getShipTypeDef()`. All stats wired into both player and enemy movement/combat in `CombatScreen`.
+
 ---
 
 ## Part B — Enemy Ships on the Map
 
-Three ship categories:
+**Design change:** Visible patrolling enemy ships were replaced with a **JRPG-style random encounter system**. Invisible enemies and state-machine AI on the world map were found to be disruptive to sailing gameplay. Mission-specific ships remain as visible plot ships.
 
-| Category | Faction | Behavior | Turns hostile when |
-|---|---|---|---|
-| Pirate | Always hostile | Roams open sea, chases player | Always |
-| Navy | Neutral | Patrols near ports | Rep < -30 OR player attacks first |
-| Merchant | Neutral | Follows trade routes between ports | Player attacks first |
-
-Counts on the map at spawn:
-- Pirates: 3–5, scales up as player reputation drops
-- Navy: 1–2 per port, always present
-- Merchants: 3–5 roaming between ports
-
-AI state machine per enemy:
+### Encounter accumulator
 ```
-Patrolling  → [player enters detection range 8 tiles]     → Chasing
-Chasing     → [player within cannon range 4.5 tiles]      → Firing
-Firing      → [player within boarding range 0.6 + hull<30%] → Boarding
-Firing      → [hull < 25%]                                → Fleeing
-Chasing     → [lost player for 12s]                       → ReturningHome
-ReturningHome → [back in patrol zone]                     → Patrolling
+encounterAccum += distanceMoved * encounterRate * repMult * bountyMult
+trigger when encounterAccum >= 1.0
 ```
 
-All enemy ships affected by wind — player can outrun them with speed + wind angle advantage.
+### Encounter rate by location
+```
+baseRate = 0.003 + routeProximity² × 0.064
+```
+- Open ocean: ~1 encounter per 333 tiles moved
+- On a shipping route: ~1 encounter per 15 tiles moved
+
+### Reputation multipliers
+- `repMult = 1.0 + infamy/100` — up to 2× at max infamy
+- `bountyMult = 1.0 + bounty/500` — bounty hunters scale in
+
+### Cooldowns
+- 25 seconds between encounters
+- 15-second grace period after leaving port
+
+**Implemented:** encounter tick in `src/main.cpp`; faction/class generation in `src/encounter/EncounterGenerator.h/.cpp`
 
 ---
 
-## Part C — Encounter Phase (pre-combat)
+## Shipping Routes
 
-When an enemy enters detection range, `GameMode::Encounter` activates before any combat.
+Routes are computed at world generation using **A\* pathfinding on ocean tiles** — no land crossing.
 
-### Identification tiers (based on crew roles)
+- `World::nearestOcean()` — spiral search for embark tile adjacent to each port (ports sit on land)
+- `World::astarOcean()` — 8-directional A*, ocean tiles only
+- Each port connects to its 2 nearest neighbours
+- Precomputed `routeProxGrid_` (per-tile float 0–1) for O(1) per-frame lookup
+- Routes drawn on world map as connected line segments
 
-| Crew | Flag | Faction | Size | Class | Cannons | Hull Health | Crew Est. | Cargo Est. |
-|---|---|---|---|---|---|---|---|---|
-| None | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| Lookout | ✓ (may be false) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| Spotter | ✓ (true) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+**Implemented:** `src/world/ShippingRoute.h`, `src/world/World.cpp` (`buildRoutes`, `buildProximityGrid`, `astarOcean`, `nearestOcean`)
 
-- Pirates show false nation flag to non-Spotter players
-- Spotter sees through false colors, reveals Jolly Roger
+---
 
-### Encounter menu options
-1. **Engage** — proceed to combat immediately
-2. **Attempt to Evade** — evasion roll; success = escape, failure = combat forced
+## Part C — Encounter Screen
 
-### Evasion formula
-```
-P(evade) = speedAdvantage × classModifier × healthModifier × windModifier
+When an encounter triggers, `GameMode::Encounter` activates with a menu built dynamically based on target faction and player reputation.
 
-speedAdvantage = clamp(yourSpeed / enemySpeed, 0, 1.5)
-classModifier:
-  Sloop 1.3 / Brigantine 1.1 / Frigate 0.9 / Galleon 0.7 / Man-o-War 0.5
-healthModifier = hullCur / hullMax
-windModifier   = yourWindFactor / enemyWindFactor
-```
+### Identification tiers
+| Crew | Flag | Faction | Size |
+|---|---|---|---|
+| None | ✗ | ✗ | ✗ |
+| Lookout | ✓ (may be false) | ✓ | ✓ |
+| Spotter | ✓ (true) | ✓ | ✓ |
 
-Evasion success: enemy returns to patrol, brief detection cooldown.
-Evasion failure: combat begins immediately, no second chance.
+### Menu options by situation
+- **Merchant (identified):** Engage / Hail & Trade / Rob & Plunder / Flee
+- **Navy:** Engage / Hail (pass) / Flee
+- **Unknown/Pirate:** Engage / Hail / Flee
+
+### Rob outcome
+Intimidation roll: `P(success) = 0.20 + infamy/150` (capped at 0.80). Success = full cargo, no combat. Failure = combat forced.
+
+**Implemented:** `src/ui/EncounterScreen.h/.cpp`
 
 ---
 
 ## Part D — Combat System
 
-Real-time on the sailing map. No separate combat screen in Layer 1.
+Real-time arena combat in a dedicated `CombatScreen` (40×22 tile arena, 32 px/tile).
 
-### Cannon fire (manual broadside)
-- Player maneuvers enemy into ±60° arc off port or starboard side
-- Press **Space** to fire
+### Movement
+- Both ships use `getShipTypeDef(shipClass).speed × wind.speedFactor()`
+- `COMBAT_SPEED_SCALE = 0.25f` — all movement at 25% of world speed for meaningful positioning
+- Flooding penalty below 20% hull: speed reduced to 5–20% of normal
+
+### Cannon fire
+- Player fires with **Space** when enemy is in broadside arc (±60°)
 - Hit formula: `P(hit) = accuracy × (1 - dist/range) × (morale/100)`
-- Damage: `cannon.damage ± small jitter`
-- Reload timer must complete before firing again
-- Enemy fires independently on their own reload timer
+- Cannonball projectiles: visual dots (yellow/orange) at 18 tiles/sec; damage applied on arrival
 
-### Boarding (hull < 30% and within 0.6 tiles)
-Every 2 seconds:
-```
-playerAttack = playerCrew × (morale/100) × rand(0.8–1.2)
-enemyAttack  = enemyCrew  × (morale/100) × rand(0.8–1.2)
-playerCrew  -= (int)(enemyAttack × 0.15)
-enemyCrew   -= (int)(playerAttack × 0.15)
-```
-First side to 0 crew loses.
+### Escape
+- Enemy is clamped to arena above 20% hull
+- Below 20% hull (flooding): enemy may drift outside arena to escape
+- `CombatOutcome::EnemyEscaped` recorded
 
-### Combat outcomes
+### Surrender
+- Triggers once when enemy hull drops below 25%
+- White-flag UI freezes combat; three choices:
+  - **Accept:** capture gold + cargo + crew value → `EnemyCaptured`
+  - **Sack:** plunder + hull scrap bonus, sets `sacked_` flag (+15 infamy) → `EnemySunk`
+  - **Refuse:** dismiss, combat resumes
 
-| Outcome | Trigger | Result |
-|---|---|---|
-| Enemy sunk | Enemy hull = 0 | 50% cargo loot + all gold |
-| Enemy captured | Enemy crew = 0 boarding | 100% cargo + gold; can swap ship if crew sufficient |
-| Ship swap | Captured + enough crew | Player takes enemy ship |
-| Player sunk | Player hull = 0 | Captain survival check |
-| Player captured | Player crew = 0 boarding | Gold lost, ship lost, respawn nearest port |
-| Escaped | Player exits detection range | Enemy returns to patrol |
+### Outcomes
+| Outcome | Trigger |
+|---|---|
+| EnemySunk | Enemy hull = 0 |
+| EnemyCaptured | Accepted surrender |
+| PlayerSunk | Player hull = 0 |
+| EnemyEscaped | Enemy drifts outside arena (hull < 20%) |
+| PlayerFled | Player exits arena |
 
-### HUD additions during combat
-- Enemy ship highlighted with colored indicator
-- Cannon arc shown when enemy is in range
-- Reload timer bar
-- Morale displayed
+**Implemented:** `src/ui/CombatScreen.h/.cpp`, `src/combat/CombatState.h`, `src/combat/CombatSystem.h/.cpp`
 
 ---
 
-## Part E — Captain & Game Time (Layer 1b — implement last)
+## Part E — Captain & Game Time
 
-### Captain struct
-```
-name
-age          (starts ~25, advances with in-game days)
-health       (0–100, permanently reduced on near-death)
-skills[]     (navigation, combat, trade — affect outcomes)
-```
+Basic stubs implemented. Full skill/age/survival system deferred to Layer 2.
 
-Crew roles (affect encounter identification):
-- **Lookout** — reveals flag, faction, rough size
-- **Spotter** — reveals everything including true colors
-
-### Game time
-- Tracked in days
-- Events advance the clock (sinkings, voyages, port visits)
-- Age advances as days pass
-- Displayed in HUD: "Year 3, Spring"
-
-### Captain survival on sinking
-```
-P(survive) = (health/100) × ageModifier × skillBonus
-
-ageModifier:
-  age < 35  → 1.0
-  age 35–55 → 0.8
-  age 55–70 → 0.5
-  age > 70  → 0.25
-
-skillBonus: navigation skill adds up to +0.15
-```
-
-Survived: rescued to nearest port, health permanently -10 to -20, time advances several days.
-Drowned: **game over**.
+**Implemented:** `src/captain/Captain.h` (struct placeholder), `src/captain/GameTime.h/.cpp` (day counter, season display)
 
 ---
 
-## New Files to Create
+## Reputation
 
-```
-src/ship/ShipType.h/.cpp         — ShipClass, CannonConfig, ShipTypeDef, getShipTypeDef()
-src/ship/EnemyShip.h             — Nation, Faction, AIState, PatrolZone, EnemyShip
-src/ship/EnemyManager.h/.cpp     — Spawn, per-frame AI update, state machine
-src/combat/CombatState.h         — CombatPhase, CombatOutcome, BoardingResult, CombatState
-src/combat/CombatSystem.h/.cpp   — Cannon hit roll, boarding rounds, evasion roll, outcomes
-src/encounter/EncounterScreen.h/.cpp — Pre-combat menu, identification display
-src/captain/Captain.h            — Captain struct (name, age, health, skills, crew roles)
-src/captain/GameTime.h/.cpp      — Day counter, season, age advancement
+```cpp
+struct Reputation { float infamy = 0.0f; int bounty = 0; };
 ```
 
-## Files to Modify
+- Sacking a surrendered ship: +15 infamy
+- Sinking a non-pirate: +5 infamy
+- Affects encounter rate, faction hostility, and Rob intimidation roll
 
-```
-src/ship/ShipStats.h       — Add shipClass, cannonCount, reloadTimer, canFire, morale
-src/world/Port.h           — Add nation, repairCostPerHP, hireCostPerCrew, sellsHeavyCannons
-src/world/World.h/.cpp     — Assign nations to towns at generation
-src/core/GameState.h       — Add Encounter + Combat to GameMode, activeCombatEnemy
-src/main.cpp               — Wire EnemyManager, encounter + combat branches, captain survival
-src/ui/HUD.h/.cpp          — Enemy indicators, cannon arc, reload bar, game time
-src/ui/PortScreen.h/.cpp   — Real Shipyard transactions (repair, hire, buy ship)
-```
+**Implemented:** `src/ship/Reputation.h`, wired into `ShipStats` and `main.cpp`
 
-## Build Order
+---
 
-1. `Nation` enum (add to a shared header)
-2. `ShipType.h/.cpp`
-3. `ShipStats.h` — expand fields
-4. `Captain.h` + `GameTime.h/.cpp`
-5. `Port.h` — add nation + economy fields
-6. `World` — assign nations at generation
-7. `GameState.h` — add Encounter + Combat modes
-8. `EnemyShip.h`
-9. `CombatState.h`
-10. `CombatSystem.h/.cpp`
-11. `EncounterScreen.h/.cpp`
-12. `EnemyManager.h/.cpp`
-13. `main.cpp` — wire everything
-14. `HUD` update
-15. `PortScreen` update — real Shipyard
+## Files Delivered
+
+| File | Status |
+|---|---|
+| `src/core/Nation.h` | New |
+| `src/ship/ShipType.h/.cpp` | New |
+| `src/ship/EnemyShip.h` | New |
+| `src/ship/EnemyManager.h/.cpp` | New (plot ships only) |
+| `src/ship/Reputation.h` | New |
+| `src/combat/CombatState.h` | New |
+| `src/combat/CombatSystem.h/.cpp` | New |
+| `src/encounter/EncounterGenerator.h/.cpp` | New |
+| `src/ui/CombatScreen.h/.cpp` | New |
+| `src/ui/EncounterScreen.h/.cpp` | New |
+| `src/world/ShippingRoute.h` | New |
+| `src/captain/Captain.h` | New (stub) |
+| `src/captain/GameTime.h/.cpp` | New |
+| `src/ship/ShipStats.h` | Modified |
+| `src/world/World.h/.cpp` | Modified |
+| `src/core/GameState.h` | Modified |
+| `src/main.cpp` | Modified |
+| `src/ui/HUD.h/.cpp` | Modified |
+| `src/ui/PortScreen.h/.cpp` | Modified |
+| `src/world/Port.h` | Modified |
+
+---
+
+## Layer 2 — Planned Next
+
+- Captain skills (navigation, combat, trade) with real mechanical effects
+- Per-nation reputation (not just global infamy)
+- Ship capture / crew transfer / ship swap
+- Full PortScreen economy: Shipyard purchases, cannon upgrades, crew hiring
+- Captain age advancement and survival roll on sinking
+- Boarding combat (crew vs crew)
