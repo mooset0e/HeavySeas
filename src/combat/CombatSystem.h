@@ -8,7 +8,7 @@ struct BoardingRound {
     int enemyCrewLost;
 };
 
-bool          rollHit(float accuracy, float dist, float range, float morale);
+bool          rollHit(float accuracy, float dist, float range, float morale, float broadsideMult = 1.0f);
 int           rollDamage(int baseDamage);
 float         evasionChance(ShipClass playerClass, float playerSpeed, float enemySpeed,
                              float playerHullRatio, float playerWind, float enemyWind);

@@ -10,9 +10,9 @@ static const std::array<ShipTypeDef, 5> SHIP_TYPES = {{
 }};
 
 static const std::array<CannonConfig, 3> CANNON_CONFIGS = {{
-    {  8, 3.0f, 3.0f, 0.65f },  // Light
-    { 14, 5.0f, 5.0f, 0.75f },  // Medium
-    { 22, 7.0f, 8.0f, 0.85f },  // Heavy
+    {  8,  6.0f, 3.0f, 0.65f },  // Light
+    { 14,  9.0f, 5.0f, 0.75f },  // Medium
+    { 22, 13.0f, 8.0f, 0.85f },  // Heavy
 }};
 
 CannonConfig getCannonConfig(CannonTier tier) {

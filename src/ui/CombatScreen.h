@@ -35,6 +35,8 @@ public:
         float x, y;
         float vx, vy;
         float lifetime;
+        float travelDist    = 1.0f;   // total distance to target (for arc progress)
+        float distTraveled  = 0.0f;
         bool  fromPlayer;
         bool  willHit;
         int   damage;
@@ -74,7 +76,8 @@ private:
     void updateCannonballs(float dt);
     void fireVolley(bool fromPlayer, float firerX, float firerY,
                     float targetX, float targetY,
-                    CannonTier tier, float morale);
+                    CannonTier tier, float morale,
+                    float crewAccuracyMult, float broadsideMult);
     void checkSurrenderTrigger();
     void checkEscapeAndOutcomes();
 
@@ -91,6 +94,7 @@ private:
     static float distBetween(const Fighter& a, const Fighter& b);
     static float bearingTo(const Fighter& from, const Fighter& to);
     static bool  inBroadside(float shooterHeading, float bearingToTarget);
+    static float broadsideQuality(float shooterHeading, float bearingToTarget);
     static void  steerToBearing(Fighter& f, float targetBearing, float dt);
 
     static constexpr float PI                = 3.14159265f;
