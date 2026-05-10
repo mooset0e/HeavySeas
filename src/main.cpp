@@ -11,9 +11,11 @@
 #include "ship/ShipStats.h"
 #include "world/World.h"
 #include "world/Port.h"
+#include "world/Wind.h"
 #include "ui/UIRenderer.h"
 #include "ui/HUD.h"
 #include "ui/PortScreen.h"
+#include "ui/CloudSystem.h"
 
 int main(int argc, char* argv[]) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -55,9 +57,14 @@ int main(int argc, char* argv[]) {
     ShipStats  ship;
     GameState  gameState;
     InputState input;
+    Wind       wind;
 
-    UIRenderer uiRenderer(renderer, font);
-    HUD        hud(uiRenderer);
+    float playerHeading  = 0.0f; // degrees, 0=N clockwise
+    float windSpeedFactor = 1.0f;
+
+    UIRenderer  uiRenderer(renderer, font);
+    HUD         hud(uiRenderer);
+    CloudSystem clouds;
     std::unique_ptr<PortScreen> portScreen;
 
     // Player starts on the ocean tile adjacent to the first town
@@ -104,6 +111,8 @@ int main(int argc, char* argv[]) {
 
         // --- Sailing mode ---
         if (gameState.mode == GameMode::Sailing) {
+            wind.update(dt);
+
             float dx = 0, dy = 0;
             if (input.held(SDL_SCANCODE_W) || input.held(SDL_SCANCODE_UP))    dy -= 1;
             if (input.held(SDL_SCANCODE_S) || input.held(SDL_SCANCODE_DOWN))  dy += 1;
@@ -111,25 +120,38 @@ int main(int argc, char* argv[]) {
             if (input.held(SDL_SCANCODE_D) || input.held(SDL_SCANCODE_RIGHT)) dx += 1;
             if (dx != 0 && dy != 0) { dx *= 0.7071f; dy *= 0.7071f; }
 
-            auto canOccupy = [&](float nx, float ny) {
-                int tx = std::max(0, std::min((int)nx, World::WIDTH  - 1));
-                int ty = std::max(0, std::min((int)ny, World::HEIGHT - 1));
-                return world.tile(tx, ty) == Tile::Ocean;
+            // Update heading from movement direction, apply wind speed factor
+            if (dx != 0 || dy != 0) {
+                playerHeading = std::fmod(
+                    std::atan2f(dx, -dy) * 180.0f / 3.14159265f + 360.0f, 360.0f);
+            }
+            windSpeedFactor = wind.speedFactor(playerHeading);
+            clouds.update(dt, wind);
+
+            auto enterPort = [&](int idx) {
+                gameState.mode            = GameMode::Port;
+                gameState.activePortIndex = idx;
+                portScreen = std::make_unique<PortScreen>(
+                    uiRenderer, ship, world.towns()[idx], ports[idx]);
             };
 
-            float newPx = std::max(0.5f, std::min(px + dx * PLAYER_SPEED * dt, World::WIDTH  - 0.5f));
-            float newPy = std::max(0.5f, std::min(py + dy * PLAYER_SPEED * dt, World::HEIGHT - 0.5f));
-            if (canOccupy(newPx, py)) px = newPx;
-            if (canOccupy(px, newPy)) py = newPy;
+            float speed = PLAYER_SPEED * windSpeedFactor;
+            float newPx = std::max(0.5f, std::min(px + dx * speed * dt, World::WIDTH  - 0.5f));
+            float newPy = std::max(0.5f, std::min(py + dy * speed * dt, World::HEIGHT - 0.5f));
 
-            int adjPort = world.townAdjacentTo((int)px, (int)py);
+            // X axis
+            int txX = std::max(0, std::min((int)newPx, World::WIDTH  - 1));
+            int tyX = std::max(0, std::min((int)py,    World::HEIGHT - 1));
+            int portX = world.townAt(txX, tyX);
+            if      (portX >= 0)                          enterPort(portX);
+            else if (world.tile(txX, tyX) == Tile::Ocean) px = newPx;
 
-            if (adjPort >= 0 && input.justPressed(SDL_SCANCODE_RETURN)) {
-                gameState.mode            = GameMode::Port;
-                gameState.activePortIndex = adjPort;
-                portScreen = std::make_unique<PortScreen>(
-                    uiRenderer, ship, world.towns()[adjPort], ports[adjPort]);
-            }
+            // Y axis
+            int txY = std::max(0, std::min((int)px,    World::WIDTH  - 1));
+            int tyY = std::max(0, std::min((int)newPy, World::HEIGHT - 1));
+            int portY = world.townAt(txY, tyY);
+            if      (portY >= 0)                          enterPort(portY);
+            else if (world.tile(txY, tyY) == Tile::Ocean) py = newPy;
 
             // Camera
             float camX = std::max(0.0f, std::min(px * TILE_SIZE - SCREEN_W / 2.0f,
@@ -176,9 +198,8 @@ int main(int argc, char* argv[]) {
             SDL_Rect playerRect{ psx - TILE_SIZE / 4, psy - TILE_SIZE / 4, TILE_SIZE / 2, TILE_SIZE / 2 };
             SDL_RenderFillRect(renderer, &playerRect);
 
-            hud.render(ship);
-            if (adjPort >= 0)
-                hud.renderPortPrompt(world.towns()[adjPort].name);
+            clouds.render(renderer);
+            hud.render(ship, wind, windSpeedFactor);
 
         // --- Port mode ---
         } else if (gameState.mode == GameMode::Port && portScreen) {

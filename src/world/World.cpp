@@ -66,6 +66,12 @@ int World::countLandNeighbors(int x, int y) const {
     return count;
 }
 
+int World::townAt(int tileX, int tileY) const {
+    for (int i = 0; i < (int)towns_.size(); ++i)
+        if (towns_[i].x == tileX && towns_[i].y == tileY) return i;
+    return -1;
+}
+
 int World::townAdjacentTo(int tileX, int tileY) const {
     for (int i = 0; i < (int)towns_.size(); ++i) {
         if (std::abs(towns_[i].x - tileX) <= 1 && std::abs(towns_[i].y - tileY) <= 1)
