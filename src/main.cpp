@@ -59,8 +59,10 @@ int main(int argc, char* argv[]) {
     InputState input;
     Wind       wind;
 
-    float playerHeading  = 0.0f; // degrees, 0=N clockwise
+    float playerHeading   = 0.0f;  // degrees, 0=N clockwise
     float windSpeedFactor = 1.0f;
+    int   speedLevel      = 1;     // 0=anchored, 1=slow, 2=medium, 3=full
+    static constexpr float SPEED_TIERS[] = { 0.0f, 0.35f, 0.65f, 1.0f };
 
     UIRenderer  uiRenderer(renderer, font);
     HUD         hud(uiRenderer);
@@ -113,18 +115,18 @@ int main(int argc, char* argv[]) {
         if (gameState.mode == GameMode::Sailing) {
             wind.update(dt);
 
-            float dx = 0, dy = 0;
-            if (input.held(SDL_SCANCODE_W) || input.held(SDL_SCANCODE_UP))    dy -= 1;
-            if (input.held(SDL_SCANCODE_S) || input.held(SDL_SCANCODE_DOWN))  dy += 1;
-            if (input.held(SDL_SCANCODE_A) || input.held(SDL_SCANCODE_LEFT))  dx -= 1;
-            if (input.held(SDL_SCANCODE_D) || input.held(SDL_SCANCODE_RIGHT)) dx += 1;
-            if (dx != 0 && dy != 0) { dx *= 0.7071f; dy *= 0.7071f; }
+            // Speed control — W/Up cycles up, S/Down cycles down
+            if (input.justPressed(SDL_SCANCODE_W) || input.justPressed(SDL_SCANCODE_UP))
+                speedLevel = std::min(3, speedLevel + 1);
+            if (input.justPressed(SDL_SCANCODE_S) || input.justPressed(SDL_SCANCODE_DOWN))
+                speedLevel = std::max(0, speedLevel - 1);
 
-            // Update heading from movement direction, apply wind speed factor
-            if (dx != 0 || dy != 0) {
-                playerHeading = std::fmod(
-                    std::atan2f(dx, -dy) * 180.0f / 3.14159265f + 360.0f, 360.0f);
-            }
+            // Steering — A/Left snaps -45°, D/Right snaps +45°
+            if (input.justPressed(SDL_SCANCODE_A) || input.justPressed(SDL_SCANCODE_LEFT))
+                playerHeading = std::fmod(playerHeading - 45.0f + 360.0f, 360.0f);
+            if (input.justPressed(SDL_SCANCODE_D) || input.justPressed(SDL_SCANCODE_RIGHT))
+                playerHeading = std::fmod(playerHeading + 45.0f, 360.0f);
+
             windSpeedFactor = wind.speedFactor(playerHeading);
             clouds.update(dt, wind);
 
@@ -135,9 +137,11 @@ int main(int argc, char* argv[]) {
                     uiRenderer, ship, world.towns()[idx], ports[idx]);
             };
 
-            float speed = PLAYER_SPEED * windSpeedFactor;
-            float newPx = std::max(0.5f, std::min(px + dx * speed * dt, World::WIDTH  - 0.5f));
-            float newPy = std::max(0.5f, std::min(py + dy * speed * dt, World::HEIGHT - 0.5f));
+            // Ship moves at chosen speed tier, scaled by wind
+            float speed   = PLAYER_SPEED * SPEED_TIERS[speedLevel] * windSpeedFactor;
+            float headRad = playerHeading * 3.14159265f / 180.0f;
+            float newPx   = std::max(0.5f, std::min(px + std::sinf(headRad) * speed * dt, World::WIDTH  - 0.5f));
+            float newPy   = std::max(0.5f, std::min(py - std::cosf(headRad) * speed * dt, World::HEIGHT - 0.5f));
 
             // X axis
             int txX = std::max(0, std::min((int)newPx, World::WIDTH  - 1));
@@ -192,20 +196,47 @@ int main(int argc, char* argv[]) {
             }
 
             // Player
-            int psx = (int)(px * TILE_SIZE - camX);
-            int psy = (int)(py * TILE_SIZE - camY);
-            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-            SDL_Rect playerRect{ psx - TILE_SIZE / 4, psy - TILE_SIZE / 4, TILE_SIZE / 2, TILE_SIZE / 2 };
-            SDL_RenderFillRect(renderer, &playerRect);
+            // Draw player as a filled triangle pointing in heading direction
+            int   psx  = (int)(px * TILE_SIZE - camX);
+            int   psy  = (int)(py * TILE_SIZE - camY);
+            float hRad = playerHeading * 3.14159265f / 180.0f;
+            int   sz   = TILE_SIZE / 3;
 
-            clouds.render(renderer);
-            hud.render(ship, wind, windSpeedFactor);
+            // Triangle: front tip, back-left, back-right
+            int  fx  = psx + (int)(std::sinf(hRad) * sz);
+            int  fy  = psy - (int)(std::cosf(hRad) * sz);
+            int  blx = psx + (int)(std::sinf(hRad + 2.4f) * sz * 0.65f);
+            int  bly = psy - (int)(std::cosf(hRad + 2.4f) * sz * 0.65f);
+            int  brx = psx + (int)(std::sinf(hRad - 2.4f) * sz * 0.65f);
+            int  bry = psy - (int)(std::cosf(hRad - 2.4f) * sz * 0.65f);
+
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            for (int i = 0; i <= 20; ++i) {
+                float t = i / 20.0f;
+                SDL_RenderDrawLine(renderer, fx, fy,
+                    blx + (int)((brx - blx) * t),
+                    bly + (int)((bry - bly) * t));
+            }
+
+            clouds.render(renderer, camX, camY);
+            hud.render(ship, wind, windSpeedFactor, speedLevel);
 
         // --- Port mode ---
         } else if (gameState.mode == GameMode::Port && portScreen) {
             portScreen->handleInput(input);
 
             if (portScreen->wantsToLeave()) {
+                // Point ship away from the port so it doesn't immediately re-enter
+                const auto& t = world.towns()[gameState.activePortIndex];
+                float awayX = px - (t.x + 0.5f);
+                float awayY = py - (t.y + 0.5f);
+                if (awayX != 0.0f || awayY != 0.0f)
+                    playerHeading = std::fmod(
+                        std::atan2f(awayX, -awayY) * 180.0f / 3.14159265f + 360.0f, 360.0f);
+                // Snap to nearest 45° so it aligns with the steering system
+                playerHeading = std::fmod(std::round(playerHeading / 45.0f) * 45.0f, 360.0f);
+                speedLevel = 1; // start at slow so player has control
+
                 gameState.mode = GameMode::Sailing;
                 portScreen.reset();
             } else {

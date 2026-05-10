@@ -8,7 +8,7 @@ class HUD {
 public:
     explicit HUD(UIRenderer& ui);
 
-    void render(const ShipStats& ship, const Wind& wind, float speedFactor);
+    void render(const ShipStats& ship, const Wind& wind, float windFactor, int speedLevel);
 
 private:
     UIRenderer& ui_;
