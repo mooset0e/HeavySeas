@@ -12,8 +12,8 @@ static float frand(float lo, float hi) {
     return std::uniform_real_distribution<float>(lo, hi)(rng());
 }
 
-bool rollHit(float accuracy, float dist, float range, float morale) {
-    float p = accuracy * (1.0f - dist / range) * (morale / 100.0f);
+bool rollHit(float accuracy, float dist, float range, float morale, float broadsideMult) {
+    float p = accuracy * (1.0f - dist / range) * (morale / 100.0f) * broadsideMult;
     p = std::max(0.0f, p);
     return frand(0.0f, 1.0f) < p;
 }

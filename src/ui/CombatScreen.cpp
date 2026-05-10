@@ -28,6 +28,15 @@ bool CombatScreen::inBroadside(float shooterHeading, float bearingToTarget) {
     return abs > 30.0f && abs < 150.0f;
 }
 
+// 1.0 = perfect 90° broadside; 0.3 = firing at 30° or 150° edge
+float CombatScreen::broadsideQuality(float shooterHeading, float bearingToTarget) {
+    float diff = bearingToTarget - shooterHeading;
+    if (diff >  180.0f) diff -= 360.0f;
+    if (diff < -180.0f) diff += 360.0f;
+    float deviation = std::fabsf(std::fabsf(diff) - 90.0f); // 0 = perfect, 60 = edge
+    return 1.0f - 0.7f * (deviation / 60.0f);
+}
+
 void CombatScreen::steerToBearing(Fighter& f, float targetBearing, float dt) {
     float diff = targetBearing - f.heading;
     if (diff >  180.0f) diff -= 360.0f;
@@ -80,7 +89,8 @@ CombatScreen::CombatScreen(UIRenderer& ui, const ShipStats& player,
 void CombatScreen::fireVolley(bool fromPlayer,
                                float firerX, float firerY,
                                float targetX, float targetY,
-                               CannonTier tier, float morale)
+                               CannonTier tier, float morale,
+                               float crewAccuracyMult, float broadsideMult)
 {
     float dx   = targetX - firerX;
     float dy   = targetY - firerY;
@@ -88,26 +98,38 @@ void CombatScreen::fireVolley(bool fromPlayer,
     if (dist < 0.01f) return;
 
     auto  cannon = getCannonConfig(tier);
+    float baseBearing = std::atan2f(dx, -dy);  // radians, north-up
 
-    Cannonball cb;
-    cb.x          = firerX;
-    cb.y          = firerY;
-    cb.vx         = dx / dist * BALL_SPEED;
-    cb.vy         = dy / dist * BALL_SPEED;
-    cb.lifetime   = dist / BALL_SPEED + 0.15f;
-    cb.fromPlayer = fromPlayer;
-    cb.willHit    = rollHit(cannon.accuracy, dist, cannon.range, morale);
-    cb.damage     = cb.willHit ? rollDamage(cannon.damage) : 0;
-    cb.active     = true;
-    cannonballs_.push_back(cb);
+    // Three balls per volley: centre, ±5° spread
+    static constexpr float SPREAD = 5.0f * PI / 180.0f;
+    static constexpr float OFFSETS[3] = { -SPREAD, 0.0f, SPREAD };
+
+    for (float off : OFFSETS) {
+        float angle = baseBearing + off;
+        Cannonball cb;
+        cb.x            = firerX;
+        cb.y            = firerY;
+        cb.vx           = std::sinf(angle) * BALL_SPEED;
+        cb.vy           = -std::cosf(angle) * BALL_SPEED;
+        cb.travelDist   = dist;
+        cb.distTraveled = 0.0f;
+        cb.lifetime     = dist / BALL_SPEED + 0.3f;
+        cb.fromPlayer   = fromPlayer;
+        float effAcc    = cannon.accuracy * crewAccuracyMult;
+        cb.willHit      = rollHit(effAcc, dist, cannon.range, morale, broadsideMult);
+        cb.damage       = cb.willHit ? rollDamage(cannon.damage) : 0;
+        cb.active       = true;
+        cannonballs_.push_back(cb);
+    }
 }
 
 void CombatScreen::updateCannonballs(float dt) {
     for (auto& cb : cannonballs_) {
         if (!cb.active) continue;
-        cb.x        += cb.vx * dt;
-        cb.y        += cb.vy * dt;
-        cb.lifetime -= dt;
+        cb.x            += cb.vx * dt;
+        cb.y            += cb.vy * dt;
+        cb.distTraveled += BALL_SPEED * dt;
+        cb.lifetime     -= dt;
 
         Fighter& target = cb.fromPlayer ? enemy_ : player_;
         float dx = cb.x - target.x;
@@ -199,13 +221,19 @@ void CombatScreen::update(float dt, const InputState& input, Wind& wind) {
     // Player fires (Space)
     player_.reloadTimer = std::max(0.0f, player_.reloadTimer - dt);
     if (input.justPressed(SDL_SCANCODE_SPACE) && player_.reloadTimer <= 0.0f) {
-        auto  cannon = getCannonConfig(player_.cannonTier);
-        float d      = distBetween(player_, enemy_);
-        float bear   = bearingTo(player_, enemy_);
+        auto  cannon   = getCannonConfig(player_.cannonTier);
+        float d        = distBetween(player_, enemy_);
+        float bear     = bearingTo(player_, enemy_);
         if (inBroadside(player_.heading, bear) && d <= cannon.range) {
+            // Crew ratio: 3 crew per cannon = optimal
+            int   cannonCnt    = getShipTypeDef(player_.shipClass).cannonCount;
+            float crewRatio    = std::min(1.0f, (float)player_.crewCur / (cannonCnt * 3.0f));
+            float reloadMult   = 1.0f + (1.0f - crewRatio) * 2.0f;   // 1× – 3× reload
+            float accuracyMult = 0.6f + 0.4f * crewRatio;             // 60% – 100% accuracy
+            float bsQuality    = broadsideQuality(player_.heading, bear);
             fireVolley(true, player_.x, player_.y, enemy_.x, enemy_.y,
-                       player_.cannonTier, player_.morale);
-            player_.reloadTimer = cannon.reload;
+                       player_.cannonTier, player_.morale, accuracyMult, bsQuality);
+            player_.reloadTimer = cannon.reload * reloadMult;
         }
     }
 
@@ -271,12 +299,17 @@ void CombatScreen::updateEnemyAI(float dt, const Wind& wind) {
         }
     }
 
-    // Enemy fires
+    // Enemy fires — same crew/broadside penalties apply
     enemy_.reloadTimer = std::max(0.0f, enemy_.reloadTimer - dt);
     if (enemy_.reloadTimer <= 0.0f && inBroadside(enemy_.heading, bear) && d <= cannon.range) {
+        int   eCannonCnt    = getShipTypeDef(enemy_.shipClass).cannonCount;
+        float eCrewRatio    = std::min(1.0f, (float)enemy_.crewCur / (eCannonCnt * 3.0f));
+        float eReloadMult   = 1.0f + (1.0f - eCrewRatio) * 2.0f;
+        float eAccuracyMult = 0.6f + 0.4f * eCrewRatio;
+        float eBsQuality    = broadsideQuality(enemy_.heading, bear);
         fireVolley(false, enemy_.x, enemy_.y, player_.x, player_.y,
-                   enemy_.cannonTier, enemy_.morale);
-        enemy_.reloadTimer = cannon.reload;
+                   enemy_.cannonTier, enemy_.morale, eAccuracyMult, eBsQuality);
+        enemy_.reloadTimer = cannon.reload * eReloadMult;
     }
 }
 
@@ -368,31 +401,52 @@ void CombatScreen::renderFighter(const Fighter& f, bool isPlayer) {
 }
 
 void CombatScreen::renderCannonballs() {
+    SDL_SetRenderDrawBlendMode(ui_.renderer(), SDL_BLENDMODE_BLEND);
+
     for (const auto& cb : cannonballs_) {
         if (!cb.active) continue;
+
+        // Arc: sin curve over flight progress; peaks at 48 px above water
+        float progress  = std::min(1.0f, cb.distTraveled / std::max(cb.travelDist, 0.01f));
+        float arcOffPx  = std::sinf(progress * PI) * 48.0f;
+
         int sx = asx(cb.x);
         int sy = asy(cb.y);
+        int bx = sx;
+        int by = sy - (int)arcOffPx;   // ball rendered above its water position
 
-        // Cannonball: bright yellow-white dot with a small trail hint
         SDL_Color col = cb.fromPlayer ? SDL_Color{ 255, 230, 80, 255 }
                                       : SDL_Color{ 255, 120, 60, 255 };
-        SDL_SetRenderDrawColor(ui_.renderer(), col.r, col.g, col.b, col.a);
-        SDL_Rect dot{ sx - 3, sy - 3, 6, 6 };
-        SDL_RenderFillRect(ui_.renderer(), &dot);
 
-        // 1-px core
-        SDL_SetRenderDrawColor(ui_.renderer(), 255, 255, 255, 255);
-        SDL_Rect core{ sx - 1, sy - 1, 2, 2 };
-        SDL_RenderFillRect(ui_.renderer(), &core);
+        // Shadow on the water (grows larger at peak arc)
+        int shadowR = 2 + (int)(arcOffPx / 20.0f);
+        SDL_SetRenderDrawColor(ui_.renderer(), 0, 0, 0, 80);
+        SDL_Rect shadow{ sx - shadowR, sy - shadowR, shadowR * 2, shadowR * 2 };
+        SDL_RenderFillRect(ui_.renderer(), &shadow);
 
-        // Simple trail: draw a dimmer dot one step back
-        float trailX = cb.x - cb.vx * 0.04f;
-        float trailY = cb.y - cb.vy * 0.04f;
-        int tsx = asx(trailX), tsy = asy(trailY);
-        SDL_SetRenderDrawColor(ui_.renderer(), col.r / 2, col.g / 2, col.b / 2, 180);
+        // Trail: a dimmer dot one step behind the ball
+        float trailX = cb.x - cb.vx * 0.05f;
+        float trailY = cb.y - cb.vy * 0.05f;
+        float trailProgress = std::max(0.0f, progress - 0.05f);
+        float trailOff = std::sinf(trailProgress * PI) * 48.0f;
+        int tsx = asx(trailX), tsy = asy(trailY) - (int)trailOff;
+        SDL_SetRenderDrawColor(ui_.renderer(), col.r / 2, col.g / 2, col.b / 2, 160);
         SDL_Rect trail{ tsx - 2, tsy - 2, 4, 4 };
         SDL_RenderFillRect(ui_.renderer(), &trail);
+
+        // Ball dot — slightly larger at peak arc (appears to swell as it rises)
+        int dotR = 3 + (int)(arcOffPx / 32.0f);
+        SDL_SetRenderDrawColor(ui_.renderer(), col.r, col.g, col.b, 255);
+        SDL_Rect dot{ bx - dotR, by - dotR, dotR * 2, dotR * 2 };
+        SDL_RenderFillRect(ui_.renderer(), &dot);
+
+        // White core
+        SDL_SetRenderDrawColor(ui_.renderer(), 255, 255, 255, 255);
+        SDL_Rect core{ bx - 1, by - 1, 2, 2 };
+        SDL_RenderFillRect(ui_.renderer(), &core);
     }
+
+    SDL_SetRenderDrawBlendMode(ui_.renderer(), SDL_BLENDMODE_NONE);
 }
 
 void CombatScreen::renderSurrenderUI() {
