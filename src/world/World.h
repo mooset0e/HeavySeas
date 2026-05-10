@@ -20,6 +20,7 @@ public:
 
     Tile tile(int x, int y) const { return grid_[y * WIDTH + x]; }
     const std::vector<Town>& towns() const { return towns_; }
+    int townAdjacentTo(int tileX, int tileY) const;
 
 private:
     std::vector<Tile> grid_;

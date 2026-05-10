@@ -2,6 +2,7 @@
   "name": "heavy-seas",
   "version": "0.1.0",
   "dependencies": [
-    "sdl2"
+    "sdl2",
+    "sdl2-ttf"
   ]
 }

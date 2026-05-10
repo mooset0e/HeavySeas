@@ -1,6 +1,7 @@
 #include "world/World.h"
 #include <random>
 #include <algorithm>
+#include <cmath>
 
 static const std::vector<std::string> TOWN_NAMES = {
     "Port Royal", "Tortuga", "Nassau", "Havana", "Cartagena",
@@ -63,6 +64,14 @@ int World::countLandNeighbors(int x, int y) const {
             }
         }
     return count;
+}
+
+int World::townAdjacentTo(int tileX, int tileY) const {
+    for (int i = 0; i < (int)towns_.size(); ++i) {
+        if (std::abs(towns_[i].x - tileX) <= 1 && std::abs(towns_[i].y - tileY) <= 1)
+            return i;
+    }
+    return -1;
 }
 
 void World::placeTowns(uint32_t seed) {
