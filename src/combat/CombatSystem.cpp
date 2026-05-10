@@ -22,6 +22,15 @@ int rollDamage(int baseDamage) {
     return baseDamage + (int)frand(-2.0f, 3.0f);
 }
 
+// Each point of hull damage has a 15% chance of killing a crew member.
+// Expected losses: Light ~1.2, Medium ~2.1, Heavy ~3.3 per hit.
+int rollCrewCasualties(int damage) {
+    int losses = 0;
+    for (int i = 0; i < damage; ++i)
+        if (frand(0.0f, 1.0f) < 0.15f) ++losses;
+    return losses;
+}
+
 float evasionChance(ShipClass playerClass, float playerSpeed, float enemySpeed,
                     float playerHullRatio, float playerWind, float enemyWind)
 {

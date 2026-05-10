@@ -140,8 +140,15 @@ void CombatScreen::updateCannonballs(float dt) {
         bool arrived = d < 0.5f;
         bool expired = cb.lifetime <= 0.0f;
         if (arrived || expired) {
-            if (arrived && cb.willHit)
+            if (arrived && cb.willHit) {
                 target.hullCur = std::max(0, target.hullCur - cb.damage);
+                int crewLost = rollCrewCasualties(cb.damage);
+                if (crewLost > 0) {
+                    target.crewCur = std::max(0, target.crewCur - crewLost);
+                    // Morale drops 4 points per crew death, floored at 10
+                    target.morale = std::max(10.0f, target.morale - 4.0f * crewLost);
+                }
+            }
             cb.active = false;
         }
     }
@@ -502,26 +509,44 @@ void CombatScreen::renderHUD(const Wind& wind) {
     static const SDL_Color GOLD = { 255, 220,  80, 255 };
     static const SDL_Color RDY  = { 255, 220,  50, 255 };
 
-    // Player hull — top-left
-    SDL_Rect pp{ 8, 8, 230, 56 };
+    // Player hull + crew — top-left
+    SDL_Rect pp{ 8, 8, 230, 80 };
     ui_.drawPanel(pp, { 10, 20, 45, 220 }, { 70, 120, 155, 255 }, 2);
     ui_.drawText("Your Ship", pp.x + 8, pp.y + 6, GOLD);
-    ui_.drawText("Hull:", pp.x + 8, pp.y + 30, TXT);
-    SDL_Rect ph{ pp.x + 58, pp.y + 32, pp.w - 68, 14 };
+    ui_.drawText("Hull:", pp.x + 8, pp.y + 28, TXT);
+    SDL_Rect ph{ pp.x + 58, pp.y + 30, pp.w - 68, 12 };
     SDL_Color phc = player_.hullCur > player_.hullMax / 2
         ? SDL_Color{ 60, 200, 60, 255 } : SDL_Color{ 220, 80, 60, 255 };
     ui_.drawHealthBar(player_.hullCur, player_.hullMax, ph, phc);
+    ui_.drawText("Crew:", pp.x + 8, pp.y + 52, TXT);
+    SDL_Rect pc{ pp.x + 58, pp.y + 54, pp.w - 68, 12 };
+    SDL_Color pcc = player_.crewCur > player_.crewMax / 2
+        ? SDL_Color{ 80, 160, 220, 255 } : SDL_Color{ 220, 160, 40, 255 };
+    ui_.drawHealthBar(player_.crewCur, player_.crewMax, pc, pcc);
+    {
+        std::string moraleStr = "Morale " + std::to_string((int)player_.morale) + "%";
+        ui_.drawText(moraleStr.c_str(), pp.x + pp.w - 90, pp.y + 6, DIM);
+    }
 
-    // Enemy hull — top-right
+    // Enemy hull + crew — top-right
     static const char* classNames[] = { "Sloop","Brigantine","Frigate","Galleon","Man-o'-War" };
-    SDL_Rect ep{ 1280 - 238, 8, 230, 56 };
+    SDL_Rect ep{ 1280 - 238, 8, 230, 80 };
     ui_.drawPanel(ep, { 40, 8, 8, 220 }, { 200, 70, 50, 255 }, 2);
     ui_.drawText(classNames[(int)enemy_.shipClass], ep.x + 8, ep.y + 6, { 255, 140, 120, 255 });
-    ui_.drawText("Hull:", ep.x + 8, ep.y + 30, TXT);
-    SDL_Rect eh{ ep.x + 58, ep.y + 32, ep.w - 68, 14 };
+    ui_.drawText("Hull:", ep.x + 8, ep.y + 28, TXT);
+    SDL_Rect eh{ ep.x + 58, ep.y + 30, ep.w - 68, 12 };
     SDL_Color ehc = enemy_.hullCur > enemy_.hullMax / 2
         ? SDL_Color{ 200, 120, 50, 255 } : SDL_Color{ 200, 50, 50, 255 };
     ui_.drawHealthBar(enemy_.hullCur, enemy_.hullMax, eh, ehc);
+    ui_.drawText("Crew:", ep.x + 8, ep.y + 52, TXT);
+    SDL_Rect ec{ ep.x + 58, ep.y + 54, ep.w - 68, 12 };
+    SDL_Color ecc = enemy_.crewCur > enemy_.crewMax / 2
+        ? SDL_Color{ 180, 100, 40, 255 } : SDL_Color{ 200, 50, 50, 255 };
+    ui_.drawHealthBar(enemy_.crewCur, enemy_.crewMax, ec, ecc);
+    {
+        std::string moraleStr = "Morale " + std::to_string((int)enemy_.morale) + "%";
+        ui_.drawText(moraleStr.c_str(), ep.x + ep.w - 90, ep.y + 6, DIM);
+    }
 
     // Speed — bottom-left
     static const char* spdLabels[] = { "ANCHORED","SLOW","MEDIUM","FULL SAIL" };
